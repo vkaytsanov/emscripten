@@ -1794,15 +1794,6 @@ function reattachComments(ast, comments) {
 var suffix = '';
 
 var arguments = process['argv'].slice(2);;
-// If enabled, output retains parentheses and comments so that the
-// output can further be passed out to Closure.
-var closureFriendly = arguments.indexOf('--closureFriendly');
-if (closureFriendly > -1) {
-  arguments.splice(closureFriendly, 1);
-  closureFriendly = true;
-} else {
-  closureFriendly = false;
-}
 
 var infile = arguments[0];
 var passes = arguments.slice(1);
@@ -1840,6 +1831,10 @@ try {
 var minifyWhitespace = false;
 var noPrint = false;
 var verbose = false;
+// If enabled, output retains parentheses and comments so that the
+// output can further be passed out to Closure.
+var closureFriendly = false;
+
 
 var registry = {
   JSDCE: JSDCE,
@@ -1850,6 +1845,7 @@ var registry = {
   minifyWhitespace: function() { minifyWhitespace = true },
   noPrint: function() { noPrint = true },
   verbose: function() { verbose = true },
+  closureFriendly: function() { closureFriendly = true },
   last: function() {}, // TODO: remove 'last' in the python driver code
   dump: function() { dump(ast) },
   littleEndianHeap: littleEndianHeap,

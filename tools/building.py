@@ -696,7 +696,7 @@ def acorn_optimizer(filename, passes, extra_info=None, return_output=False):
   # Keep JS code comments intact through the acorn optimization pass so that JSDoc comments
   # will be carried over to a later Closure run.
   if Settings.USE_CLOSURE_COMPILER:
-    cmd += ['--closureFriendly']
+    cmd += ['closureFriendly']
   if Settings.VERBOSE:
     cmd += ['verbose']
   if not return_output:
