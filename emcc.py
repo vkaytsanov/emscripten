@@ -198,15 +198,20 @@ class OFormat(Enum):
   BARE = auto()
 
 
+@unique
+class Mode(Enum):
+  PREPROCESS_ONLY = auto()
+  PCH = auto()
+  COMPILE_ONLY = auto()
+  POST_LINK_ONLY = auto()
+  COMPILE_AND_LINK = auto()
+
+
 class EmccState:
   def __init__(self, args):
+    self.mode = Mode.COMPILE_AND_LINK
     self.orig_args = args
-    # TODO(sbc): Replace the below 4 mode variables with a single mode enum
-    # Set to true if there are `.h` files passed on the command line
-    self.has_header_inputs = False
     self.link_to_object = False
-    self.compile_only = False
-    self.preprocess_only = False
     self.has_dash_c = False
     self.has_dash_E = False
     self.has_dash_S = False
@@ -1015,7 +1020,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
   state = EmccState(args)
   options, newargs, input_files, target, wasm_target = phase_setup(state)
 
-  if options.post_link:
+  if state.mode == Mode.POST_LINK_ONLY:
     process_libraries(state.libs, state.lib_dirs, [])
     if len(input_files) != 1:
       exit_with_error('--post-link requires a single input file')
@@ -1026,7 +1031,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
   linker_inputs = []
   phase_compile_inputs(options, state, newargs, input_files, linker_inputs)
 
-  if state.compile_only:
+  if state.mode != Mode.COMPILE_AND_LINK:
     logger.debug('stopping after compile phase')
     for flag in state.link_flags:
       diagnostics.warning('unused-command-line-argument', "argument unused during compilation: '%s'" % flag[1])
@@ -1068,7 +1073,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
   return 0
 
 
-@ToolchainProfiler.profile_block('calc linker inputs')
+@ToolchainProfiler.profile_block('calculate linker inputs')
 def phase_calculate_linker_inputs(options, state, linker_inputs):
   using_lld = not (state.link_to_object and settings.LTO)
   state.link_flags = filter_link_flags(state.link_flags, using_lld)
@@ -1255,7 +1260,7 @@ def phase_setup(state):
         exit_with_error('%s: No such file or directory ("%s" was expected to be an input file, based on the commandline arguments provided)', arg, arg)
       file_suffix = get_file_suffix(arg)
       if file_suffix in HEADER_ENDINGS:
-        state.has_header_inputs = True
+        state.mode = Mode.PCH
       if file_suffix in STATICLIB_ENDINGS and not building.is_ar(arg):
         if building.is_bitcode(arg):
           message = arg + ': File has a suffix of a static library ' + str(STATICLIB_ENDINGS) + ', but instead is an LLVM bitcode file! When linking LLVM bitcode files use .bc or .o.'
@@ -1307,15 +1312,19 @@ def phase_setup(state):
   state.has_dash_c = '-c' in newargs
   state.has_dash_S = '-S' in newargs
   state.has_dash_E = '-E' in newargs
-  state.preprocess_only = state.has_dash_E or '-M' in newargs or '-MM' in newargs or '-fsyntax-only' in newargs
-  state.compile_only = state.has_dash_c or state.has_dash_S or state.has_header_inputs or state.preprocess_only
-
-  if not state.compile_only:
+  if state.has_dash_E or '-M' in newargs or '-MM' in newargs or '-fsyntax-only' in newargs:
+    state.mode = Mode.PREPROCESS_ONLY
+  elif state.has_dash_c or state.has_dash_S:
+    state.mode = Mode.COMPILE_ONLY
+  else:
     ldflags = emsdk_ldflags(newargs)
     for f in ldflags:
       add_link_flag(sys.maxsize, f)
 
-  if state.has_dash_c or state.has_dash_S or state.has_dash_E or '-M' in newargs or '-MM' in newargs:
+  if options.post_link:
+    mode = Mode.POST_LINK_ONLY
+
+  if state.mode in (Mode.COMPILE_ONLY, Mode.PREPROCESS_ONLY):
     if state.has_dash_c:
       if '-emit-llvm' in newargs:
         options.default_object_extension = '.bc'
@@ -1582,11 +1591,10 @@ def phase_setup(state):
     else:
       if options.shared:
         diagnostics.warning('emcc', 'linking a library with `-shared` will emit a static object file.  This is a form of emulation to support existing build systems.  If you want to build a runtime shared library use the SIDE_MODULE setting.')
-      state.link_to_object = True
+      state.mode = Mode.LINK_TO_OBJECT
 
-  if not state.link_to_object and not state.compile_only:
-    if final_suffix in ('.o', '.bc', '.so', '.dylib') and not settings.SIDE_MODULE:
-      diagnostics.warning('emcc', 'generating an executable with an object extension (%s).  If you meant to build an object file please use `-c, `-r`, or `-shared`' % final_suffix)
+  if state.mode == Mode.COMPILE_AND_LINK and final_suffix in ('.o', '.bc', '.so', '.dylib') and not settings.SIDE_MODULE:
+    diagnostics.warning('emcc', 'generating an executable with an object extension (%s).  If you meant to build an object file please use `-c, `-r`, or `-shared`' % final_suffix)
 
   if settings.SUPPORT_BIG_ENDIAN:
     settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += [
@@ -2253,7 +2261,7 @@ def phase_compile_inputs(options, state, newargs, input_files, linker_inputs):
     return get_compiler(use_cxx(src_file)) + get_clang_flags() + compile_args + [src_file]
 
   # preprocessor-only (-E) support
-  if state.preprocess_only:
+  if state.mode == Mode.PREPROCESS_ONLY:
     for input_file in [x[1] for x in input_files]:
       cmd = get_clang_command(input_file)
       if options.output_file:
@@ -2266,7 +2274,7 @@ def phase_compile_inputs(options, state, newargs, input_files, linker_inputs):
     return
 
   # Precompiled headers support
-  if state.has_header_inputs:
+  if state.mode == Mode.PCH:
     headers = [header for _, header in input_files]
     for header in headers:
       if not header.endswith(HEADER_ENDINGS):
@@ -2286,7 +2294,7 @@ def phase_compile_inputs(options, state, newargs, input_files, linker_inputs):
     return unsuffixed(name) + '_' + seen_names[name] + shared.suffix(name)
 
   def get_object_filename(input_file):
-    if state.compile_only:
+    if state.mode == Mode.COMPILE_ONLY:
       # In compile-only mode we don't use any temp file.  The object files
       # are written directly to their final output locations.
       if options.output_file:
@@ -2300,7 +2308,7 @@ def phase_compile_inputs(options, state, newargs, input_files, linker_inputs):
   def compile_source_file(i, input_file):
     logger.debug('compiling source file: ' + input_file)
     output_file = get_object_filename(input_file)
-    if not state.compile_only:
+    if state.mode not in (Mode.COMPILE_ONLY, Mode.PREPROCESS_ONLY):
       linker_inputs.append((i, output_file))
     if get_file_suffix(input_file) in ASSEMBLY_ENDINGS:
       cmd = get_clang_command_asm(input_file)
