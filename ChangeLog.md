@@ -18,8 +18,8 @@ to browse the changes between the tags.
 
 See docs/process.md for more on how version tagging works.
 
-Current Trunk
--------------
+2.0.20
+------
 
 2.0.19: 05/04/2021
 ------------------
